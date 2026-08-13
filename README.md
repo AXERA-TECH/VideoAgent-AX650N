@@ -307,7 +307,7 @@ print(result)
 
 ### 使用步骤
 
-<video controls src="assets/操作演示.mp4" title="操作演示"></video>
+[观看演示视频](https://github.com/user-attachments/assets/41ab57cb-63b8-4692-ae52-4f51f84f0145)
 
 **1. 在 AX650N 芯片上启动相关服务**
 
