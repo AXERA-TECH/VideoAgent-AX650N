@@ -9,6 +9,11 @@ from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
 from typing import Any, Union
+from PIL import Image
+import base64
+from typing import Literal
+import io
+
 
 import numpy as np
 logger = logging.getLogger("nano-graphrag")
@@ -59,6 +64,13 @@ class EmbeddingFunc:
         # Call the function with the updated keyword arguments
         return await self.func(**kwargs)   
     
+def clean_output(raw_text):
+    # 先移除成对的 <think>...</think>
+    cleaned = re.sub(r'<think>.*?</think>', '', raw_text, flags=re.DOTALL)
+    # 再移除残留的单独 <think> 或 </think> 标签
+    cleaned = re.sub(r'</?think>', '', cleaned)
+    return cleaned
+
 
 def compute_mdhash_id(content, prefix: str = ""):
     return prefix + md5(content.encode()).hexdigest()
@@ -74,3 +86,9 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     return loop
+
+
+def _pil_to_base64(img: Image.Image, fmt: str = "JPEG") -> str:
+    buf = io.BytesIO()
+    img.save(buf, format=fmt)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")

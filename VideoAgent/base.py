@@ -11,12 +11,11 @@ class QueryParam:
     
     only_need_context: bool = False
     response_type: str = "Multiple Paragraphs"
-    level: int = 2
-    top_k: int = 3
-    # naive search
+    level: int = 1
+
     naive_max_token_for_text_unit = 1536
 
-    retrieved_num_sampled_frames = 10
+    retrieved_num_sampled_frames = 5
     # videorag search
     only_need_context: bool = False
 

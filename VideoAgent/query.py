@@ -4,16 +4,18 @@ import asyncio
 from typing import Any, Union
 from .prompt import PROMPTS
 
-from ._utils import logger
+from ._utils import logger, clean_output
 from ._llm import Qwen3
+from ._llm import Qwen3TokenizerClient
 from ._videoutil import (
    
     retrieved_segment_caption,
+    retrieved_segment_caption_kw,
 )
 
 from dotenv import load_dotenv
 from transformers import AutoTokenizer
-
+import re
 
 load_dotenv()
 
@@ -21,23 +23,8 @@ load_dotenv()
 
 
 qwen3_model = Qwen3()
-tiktoken_model_path = qwen3_model.download_tokenizer_files()
 
-tiktoken_model_path = os.path.abspath(tiktoken_model_path)
-
-
-
-try:
-    tiktoken_model_p = AutoTokenizer.from_pretrained(
-        tiktoken_model_path,
-        trust_remote_code=True,
-        local_files_only=True  # <--- 关键参数
-    )
-except Exception as e:
-    print(f"加载本地 tokenizer 失败: {e}")
-    print(f"请检查路径是否存在: {tiktoken_model_path}")
-    raise e
-
+tiktoken_client = Qwen3TokenizerClient()
 
 
 
@@ -47,22 +34,50 @@ def truncate_list_by_token_size(list_data: list, key: callable, max_token_size: 
         return []
     tokens = 0
     for i, data in enumerate(list_data):
-        tokens += len(tiktoken_model_p.encode(key(data)))
+        # tokens += len(tiktoken_model_p.encode(key(data)))
+
+        tokens += len(tiktoken_client.encode(text=key(data)).get("token_ids", []))
         if tokens > max_token_size:
             return list_data[:i]
     return list_data
 
+def _extract_keywords_query(
+    query
+):
+    # use_llm_func: callable = global_config["llm"]["cheap_model_func"]
+    keywords_prompt = PROMPTS["keywords_extraction"]
+    keywords_prompt = keywords_prompt.format(input_text=query)
+    messages = [
+        {"role": "user", "content": keywords_prompt}
+    ]
+    final_result = qwen3_model.generate_result(messages, max_new_tokens=256)
+    return final_result
 
+def _result_query_stream(query, sys_prompt, max_new_tokens: int = 1024):
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": query}
+    ]
+    return qwen3_model.generate_result_stream(messages, max_new_tokens=max_new_tokens)
 
-def _result_query(query,sys_prompt):
+def _result_query_back(query,sys_prompt):
 
     messages = [
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": query}
     ]
-     
-    content = qwen3_model.generate_result(messages)
+ 
+    # content = qwen3_model.generate_result(messages)
+    content = qwen3_model.generate_result_stream2(messages)
     return content
+
+def _result_query(query, sys_prompt):
+    from ._utils import clean_output
+
+    result = ""
+    for chunk in _result_query_stream(query, sys_prompt):
+        result += chunk
+    return clean_output(result)
 
 def enclose_string_with_quotes(content: Any) -> str:
     """Enclose a string with quotes"""
@@ -71,6 +86,8 @@ def enclose_string_with_quotes(content: Any) -> str:
     content = str(content)
     content = content.strip().strip("'").strip('"')
     return f'"{content}"'
+
+
 
 
 def list_of_list_to_csv(data: list[list]):
@@ -90,12 +107,12 @@ async def videorag_query(
     video_segment_feature_vdb,
     query_param,
 ) -> str:
-    results = await chunks_vdb.query(query, top_k = query_param.top_k)
+    results = await chunks_vdb.query(query)
     if not len(results):
         return PROMPTS["fail_response"]
     chunks_ids = [r["id"] for r in results]
     chunks = await text_chunks_db.get_by_ids(chunks_ids)
-    # print("chunks :\n", chunks)
+   
     maybe_trun_chunks = truncate_list_by_token_size(
         chunks,
         key=lambda x: x["content"],
@@ -110,7 +127,7 @@ async def videorag_query(
 
     segment_results = await video_segment_feature_vdb.query(query_for_visual_retrieval)
     
-    print(f"Retrieved Segments {segment_results}")
+    
     visual_retrieved_segments = set()
     if len(segment_results):
         for n in segment_results:
@@ -137,10 +154,13 @@ async def videorag_query(
     
     remain_segments = retrieved_segments
 
-    caption_results = retrieved_segment_caption(
+    keywords_for_caption = clean_output(_extract_keywords_query(query )) 
+   
+    caption_results = retrieved_segment_caption_kw(
         remain_segments,
         video_path_db,
         video_segments,
+        keywords_for_caption,
         num_sampled_frames = query_param.retrieved_num_sampled_frames
     )
 
@@ -157,16 +177,18 @@ async def videorag_query(
     text_units_context = list_of_list_to_csv(text_units_section_list)
 
     retreived_video_context = f"\n-----Retrieved Knowledge From Videos-----\n```csv\n{text_units_context}\n```\n"
-    # print(retreived_video_context)
+    
     sys_prompt_temp = PROMPTS["videorag_response"]
-        
+    print("retreived_chunk_context", retreived_video_context)
     sys_prompt = sys_prompt_temp.format(
         video_data=retreived_video_context,
-        chunk_data=retreived_chunk_context,
-        
+        chunk_data=retreived_chunk_context,      
     )
    
-    response = _result_query(query,
+    # response = _result_query(query,sys_prompt )
+
+    response = _result_query_back(query,
         sys_prompt,
     )
+
     return response

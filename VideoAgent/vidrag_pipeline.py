@@ -35,6 +35,7 @@ from ._videoutil import(
     merge_segment_information,
     saving_video_segments,
     preprocess_video,
+    retrieved_segment_caption_kw,
 )
 
 from .chunk import (
@@ -43,8 +44,13 @@ from .chunk import (
 )
 
 from .query import (
-    videorag_query
+    videorag_query,
+    _result_query_stream,
+    _extract_keywords_query,
+    truncate_list_by_token_size,
+    list_of_list_to_csv,
 )
+from .prompt import PROMPTS
 
 
 
@@ -57,24 +63,24 @@ class VideoRAG:
     
     # video
     threads_for_split: int = 10
-    video_segment_length: int = 20 # seconds
-    rough_num_frames_per_segment: int = 10 # frames
+    video_segment_length: int = 10 # seconds
+    rough_num_frames_per_segment: int = 5 # frames
 
     video_output_format: str = "mp4"
-    audio_output_format: str = "mp3"
+    audio_output_format: str = "wav"
     # preprocessing: resize and resample input video before indexing
     preprocess_target_width: int = 384
     preprocess_target_height: int = 384
     preprocess_target_fps: int = 5
+
     video_embedding_batch_num: int = 2
-    segment_retrieval_top_k: int = 5
+    segment_retrieval_top_k: int = 1
     video_embedding_dim: int = 2048  # qwen3-vl-embedding 输出维度
     embedding_batch_num : int = 2
     # query
-    retrieval_topk_chunks: int = 2
+    retrieval_topk_chunks: int = 1
     query_better_than_threshold: float = 0.2
     
-    # graph mode
     enable_local: bool = True
     enable_naive_rag: bool = True
     chunk_token_size: int = 1000
@@ -121,14 +127,16 @@ class VideoRAG:
 
     def insert_video(self, video_path_list=None):
         loop = always_get_an_event_loop()
-        for video_path in video_path_list:
+        total = len(video_path_list)
+        for i, video_path in enumerate(video_path_list, start=1):
             # Step0: check the existence
             video_name = os.path.basename(video_path).split('.')[0]
+            logger.info(f"[{i}/{total}] 🎬 Processing: {video_name}")
             if video_name in self.video_segments._data:
                 logger.info(f"Find the video named {os.path.basename(video_path)} in storage and skip it.")
                 continue
-           
-            
+
+            logger.info(f"[{i}/{total}]   ├ Step 1/7: Preprocessing video (resize/resample)...")
             video_output_path = preprocess_video(
                 video_path,
                 self.preprocess_target_width,
@@ -137,11 +145,13 @@ class VideoRAG:
                 self.video_output_format,
             )
 
+            logger.info(f"[{i}/{total}]   ├ Step 2/7: Saving video path metadata...")
             loop.run_until_complete(self.video_path_db.upsert(
                 {video_name: video_output_path}
             ))
             loop.run_until_complete(self.video_path_db.index_done_callback())
 
+            logger.info(f"[{i}/{total}]   ├ Step 3/7: Splitting video into segments + extracting audio...")
             segment_index2name, segment_times_info = split_video(
                 video_output_path,
                 self.working_dir,
@@ -150,6 +160,7 @@ class VideoRAG:
                 self.audio_output_format,
             )
 
+            logger.info(f"[{i}/{total}]   ├ Step 4/7: Speech recognition (ASR)...")
             transcripts = speech_to_text(
                 video_name,
                 self.working_dir,
@@ -160,8 +171,7 @@ class VideoRAG:
             captions = dict()
             error_queue = queue.Queue()
 
-          
-
+            logger.info(f"[{i}/{total}]   ├ Step 5/7: Saving video segments to cache...")
             saving_video_segments(video_name,
                     video_output_path,
                     self.working_dir,
@@ -170,6 +180,7 @@ class VideoRAG:
                     error_queue,
                     self.video_output_format,)
 
+            logger.info(f"[{i}/{total}]   ├ Step 6/7: Generating captions with VLM...")
             segment_caption(
                 video_name,
                 video_output_path,
@@ -180,15 +191,13 @@ class VideoRAG:
                 error_queue,
             )
 
-            
-            
-
             while not error_queue.empty():
                 error_message = error_queue.get()
                 with open('error_log_videorag.txt', 'a', encoding='utf-8') as log_file:
                     log_file.write(f"Video Name:{video_name} Error processing:\n{error_message}\n\n")
                 raise RuntimeError(error_message)
 
+            logger.info(f"[{i}/{total}]   ├ Step 7/7: Merging segment info & encoding features...")
             segments_information = merge_segment_information(
                             segment_index2name,
                             segment_times_info,
@@ -211,24 +220,27 @@ class VideoRAG:
             video_segment_cache_path = os.path.join(self.working_dir, '_cache', video_name)
             if os.path.exists(video_segment_cache_path):
                 shutil.rmtree(video_segment_cache_path)
-            
+
             # 添加垃圾回收和内存清理
             import gc
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
-        
-        loop.run_until_complete(self.ainsert(self.video_segments._data, asdict(self)))
-            
 
+            logger.info(f"[{i}/{total}] ✅ Completed: {video_name}")
+
+        logger.info("📝 Chunking and building text index for all videos...")
+        loop.run_until_complete(self.ainsert(self.video_segments._data, asdict(self)))
+        logger.info("🎉 All indexing completed.")
     async def ainsert(self, new_video_segment, global_configs):
+        logger.info("  → Tokenizing and chunking video segments...")
         inserting_chunks = get_chunks(
             new_videos=new_video_segment,
             chunk_func=chunking_by_video_segments,
             max_token_size=self.chunk_token_size,
         )
-        
-        
+
+        logger.info("  → Filtering already-indexed chunks...")
         _add_chunk_keys = await self.text_chunks.filter_keys(
             list(inserting_chunks.keys())
         )
@@ -238,21 +250,21 @@ class VideoRAG:
         if not len(inserting_chunks):
             logger.warning(f"All chunks are already in the storage")
             return
-        logger.info(f"[New Chunks] inserting {len(inserting_chunks)} chunks")
-        
-        logger.info("Insert chunks for naive RAG")
+        logger.info(f"  → Inserting {len(inserting_chunks)} new chunks into vector DB...")
+
+        logger.info("  → Encoding and upserting chunks to vector DB...")
         await self.chunks_vdb.upsert(inserting_chunks)
         await self.chunks_vdb.index_done_callback()
 
+        logger.info("  → Saving text chunks to KV store...")
         await self.text_chunks.upsert(inserting_chunks)
         await self.text_chunks.index_done_callback()
-
     def query(self, query: str, param: QueryParam = QueryParam()):
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.aquery(query, param))  
 
     async def aquery(self, query: str, param: QueryParam = QueryParam()):
-        
+
         response = await videorag_query(
             query,
             self.text_chunks,
@@ -263,4 +275,74 @@ class VideoRAG:
             param
         )
         return response
+
+    def query_stream(self, query: str, param: QueryParam = QueryParam()):
+        sys_prompt = self._prepare_query_context(query, param)
+        for chunk in _result_query_stream(query, sys_prompt):
+            yield chunk
+
+    def _prepare_query_context(self, query: str, param: QueryParam) -> str:
+        loop = always_get_an_event_loop()
+
+        results = loop.run_until_complete(self.chunks_vdb.query(query))
+        if not len(results):
+            return PROMPTS["fail_response"]
+
+        chunks_ids = [r["id"] for r in results]
+        chunks = loop.run_until_complete(self.text_chunks.get_by_ids(chunks_ids))
+
+        maybe_trun_chunks = truncate_list_by_token_size(
+            chunks,
+            key=lambda x: x["content"],
+            max_token_size=param.naive_max_token_for_text_unit,
+        )
+        section = "-----New Chunk-----\n".join([c["content"] for c in maybe_trun_chunks])
+        retreived_chunk_context = section
+
+        segment_results = loop.run_until_complete(
+            self.video_segment_feature_vdb.query(query)
+        )
+
+        visual_retrieved_segments = set()
+        if len(segment_results):
+            for n in segment_results:
+                visual_retrieved_segments.add(n['__id__'])
+
+        retrieved_segments = sorted(
+            visual_retrieved_segments,
+            key=lambda x: (
+                '_'.join(x.split('_')[:-1]),
+                eval(x.split('_')[-1])
+            )
+        )
+
+        remain_segments = retrieved_segments
+        keywords_for_caption = _extract_keywords_query(query)
+
+        caption_results = retrieved_segment_caption_kw(
+            remain_segments,
+            self.video_path_db,
+            self.video_segments,
+            keywords_for_caption,
+            num_sampled_frames=param.retrieved_num_sampled_frames
+        )
+
+        text_units_section_list = [["video_name", "start_time", "end_time", "content"]]
+        for s_id in caption_results:
+            video_name = '_'.join(s_id.split('_')[:-1])
+            index = s_id.split('_')[-1]
+            start_time = eval(self.video_segments._data[video_name][index]["time"].split('-')[0])
+            end_time = eval(self.video_segments._data[video_name][index]["time"].split('-')[1])
+            start_time = f"{start_time // 3600}:{(start_time % 3600) // 60}:{start_time % 60}"
+            end_time = f"{end_time // 3600}:{(end_time % 3600) // 60}:{end_time % 60}"
+            text_units_section_list.append([video_name, start_time, end_time, caption_results[s_id]])
+        text_units_context = list_of_list_to_csv(text_units_section_list)
+
+        retreived_video_context = f"\n-----Retrieved Knowledge From Videos-----\n```csv\n{text_units_context}\n```\n"
+
+        sys_prompt_temp = PROMPTS["videorag_response"]
+        return sys_prompt_temp.format(
+            video_data=retreived_video_context,
+            chunk_data=retreived_chunk_context,
+        )
 

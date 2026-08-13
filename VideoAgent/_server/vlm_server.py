@@ -23,7 +23,7 @@ def start_llm_server():
         "--port", str(PORT),
         "--max-model-len", "4096",
         "--served-model-name", MODEL_NAME,
-        "--gpu-memory-utilization", "0.4",
+        "--gpu-memory-utilization", "0.35",
         # "--max-num-batched-tokens", "1024"
     ]
     

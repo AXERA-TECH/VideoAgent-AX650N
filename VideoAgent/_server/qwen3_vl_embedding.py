@@ -21,7 +21,7 @@ from qwen_vl_utils.vision_process import process_vision_info
 logger = logging.getLogger(__name__)
 
 # Constants for configuration
-MAX_LENGTH = 8192
+MAX_LENGTH = 2048
 IMAGE_BASE_FACTOR = 16
 IMAGE_FACTOR = IMAGE_BASE_FACTOR * 2
 MIN_PIXELS = 4 * IMAGE_FACTOR * IMAGE_FACTOR
@@ -380,6 +380,8 @@ class Qwen3VLEmbedder():
             max_frames=ele.get('max_frames')
         ) for ele in inputs]
 
+        print("conversations:\n", conversations)
+
         processed_inputs = self._preprocess_inputs(conversations)
         processed_inputs = {k: v.to(self.model.device) for k, v in processed_inputs.items()}
 
@@ -391,3 +393,15 @@ class Qwen3VLEmbedder():
             embeddings = F.normalize(embeddings, p=2, dim=-1)
 
         return embeddings
+    
+    def count_tokens(self, text=None, image=None, video=None):
+        """计算输入的token数量"""
+        conversation = self.format_model_input(
+            text=text, image=image, video=video
+        )
+        inputs = self._preprocess_inputs([conversation])
+        
+        # 获取token数量
+        token_count = inputs['input_ids'].shape[1]
+        print(f"Token count: {token_count}")
+        return token_count

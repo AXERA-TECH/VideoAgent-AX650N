@@ -9,6 +9,19 @@ from moviepy.video.io.VideoFileClip import VideoFileClip
 import logging
 import multiprocessing
 
+def _get_ffmpeg_bin():
+    """返回支持 libx264 的 ffmpeg 路径"""
+    env_bin = os.getenv("FFMPEG_BIN")
+    if env_bin:
+        return env_bin
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except ImportError:
+        return "ffmpeg"
+
+_FFMPEG_BIN = _get_ffmpeg_bin()
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,12 +48,12 @@ def preprocess_video(
 
     logger.info(f"Preprocessing video {video_name}: {target_width}x{target_height} @ {target_fps}fps -> {output_path}")
     cmd = [
-        "ffmpeg", "-y",
+        _FFMPEG_BIN, "-y",
         "-i", video_path,
         "-vf", f"scale={target_width}:{target_height}",
         "-r", str(target_fps),
         "-c:v", "libx264",
-        "-c:a", "aac",  # 确保音频被编码
+        "-c:a", "aac",
         "-b:a", "128k",
         "-loglevel", "error",
         output_path,
@@ -94,7 +107,7 @@ def split_video(
             audio_file = f'{audio_file_base_name}.{audio_output_format}'
             try:
                 subaudio = subvideo.audio
-                subaudio.write_audiofile(os.path.join(video_segment_cache_path, audio_file), codec='mp3', verbose=False, logger=None)
+                subaudio.write_audiofile(os.path.join(video_segment_cache_path, audio_file), codec='pcm_s16le', fps=16000,  nbytes=2,  verbose=False, logger=None)
             except Exception as e:
                 logger.warning(f"Warning: Failed to extract audio for video {video_name} ({start}-{end}). Probably due to lack of audio track.")
 

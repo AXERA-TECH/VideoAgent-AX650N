@@ -15,7 +15,7 @@ from .._videoutil import encode_video_segments, encode_string_query
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):
     cosine_better_than_threshold: float = 0.2
-    
+    retrieval_topk_chunks: int = 2
     def __post_init__(self):
 
         self._client_file_name = os.path.join(
@@ -27,6 +27,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
         self.cosine_better_than_threshold = self.global_config.get(
             "query_better_than_threshold", self.cosine_better_than_threshold
+        )
+        self.top_k = self.global_config.get(
+            "retrieval_topk_chunks", self.retrieval_topk_chunks
         )
 
     async def upsert(self, data: dict[str, dict]):
@@ -47,11 +50,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
         embeddings = []
-        # print("batchessize::", len(batches))
         for _batch in tqdm(batches, desc=f"Encoding data"):
             for batchi in _batch:
-                # _batch[batchi] = encode_video_segments(_batch[batchi])
-            # print("batches::",_batch)
+              
                 batch_embeddings = encode_string_query(batchi)
                 embeddings.append(batch_embeddings)
 
@@ -63,12 +64,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         results = self._client.upsert(datas=list_data)
         return results
 
-    async def query(self, query: str, top_k=5):
+    async def query(self, query: str):
         embedding = encode_string_query(query)
         embedding = embedding[0].cpu()
         results = self._client.query(
             query=embedding,
-            top_k=top_k,
+            top_k=self.top_k,
             better_than_threshold=self.cosine_better_than_threshold,
         )
         results = [
@@ -82,9 +83,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
 @dataclass
 class NanoVectorDBVideoSegmentStorage(BaseVectorStorage):
-    # embedding_func = None
-    segment_retrieval_top_k: float = 2
-    
+    segment_retrieval_top_k: int = 2
+    cosine_better_than_threshold: float = 0.2
     def __post_init__(self):
         
         self._client_file_name = os.path.join(
@@ -97,12 +97,13 @@ class NanoVectorDBVideoSegmentStorage(BaseVectorStorage):
         self.top_k = self.global_config.get(
             "segment_retrieval_top_k", self.segment_retrieval_top_k
         )
+        self.cosine_better_than_threshold = self.global_config.get(
+            "query_better_than_threshold", self.cosine_better_than_threshold
+        )
     
     async def upsert(self, video_name, segment_index2name, video_output_format):
-        # embedder = imagebind_model.imagebind_huge(pretrained=True).cuda()
-        # embedder.eval()
         
-        logger.info(f"Inserting {len(segment_index2name)} segments to {self.namespace}")
+        
         if not len(segment_index2name):
             logger.warning("You insert an empty data to vector DB")
             return []
@@ -124,34 +125,29 @@ class NanoVectorDBVideoSegmentStorage(BaseVectorStorage):
         ]
         embeddings = []
         for _batch in tqdm(batches, desc=f"Encoding Video Segments {video_name}"):
-            # batch_embeddings = encode_video_segments(_batch)
             for i in range(0, len(_batch)):
                 batch_embeddings = encode_video_segments(_batch[i])
                 embeddings.append(batch_embeddings)
         embeddings = torch.concat(embeddings, dim=0)
         embeddings = embeddings.cpu().numpy()
-        # print("e", embeddings.shape)
-        # print("d", len(list_data))
+       
         for i, d in enumerate(list_data):
             d["__vector__"] = embeddings[i]
-            # print("data0: ",list_data[0]["__vector__"])
-        # print("data1: ",list_data[0]["__vector__"])
+           
         results = self._client.upsert(datas=list_data)
         
         return results
     
     async def query(self, query: str):
-        # embedder = imagebind_model.imagebind_huge(pretrained=True).cuda()
-        # embedder.eval()
         
-        # embedding = encode_string_query(query, embedder)
         embedding = encode_string_query(query)
         embedding = embedding[0].cpu().numpy()
         results = self._client.query(
             query=embedding,
             top_k=self.top_k,
-            better_than_threshold=-1,
+            better_than_threshold=self.cosine_better_than_threshold,
         )
+        # print("results: ", results)
         results = [
             {**dp, "id": dp["__id__"], "distance": dp["__metrics__"]} for dp in results
         ]

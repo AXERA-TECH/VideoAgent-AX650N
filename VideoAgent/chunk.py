@@ -7,31 +7,16 @@ from typing import Callable, Dict, List, Optional, Type, Union, cast
 import asyncio
 import os
 from ._llm import Qwen3
+from ._llm import Qwen3TokenizerClient
 
 
-# qwen3_path = os.getenv("Qwen3_Path")
 qwen3_model = Qwen3()
-tiktoken_model_path = qwen3_model.download_tokenizer_files()
-tiktoken_model_path = os.path.abspath(tiktoken_model_path)
+tiktoken_client = Qwen3TokenizerClient()
 
 
-try:
-    tiktoken_model_p = AutoTokenizer.from_pretrained(
-        tiktoken_model_path,
-        trust_remote_code=True,
-        local_files_only=True  # <--- 关键参数
-    )
-except Exception as e:
-    print(f"加载本地 tokenizer 失败: {e}")
-    print(f"请检查路径是否存在: {tiktoken_model_path}")
-    raise e
-
-
-# tiktoken_model_p = AutoTokenizer.from_pretrained(tiktoken_model_path)
 def chunking_by_video_segments(
     tokens_list: list[list[int]],
     doc_keys,
-    tiktoken_model,
     max_token_size=1024,
 ):
     # make sure each segment is not larger than max_token_size
@@ -50,12 +35,13 @@ def chunking_by_video_segments(
             chunk_token += tokens.copy()
             chunk_segment_ids.append(doc_keys[index])
         else:
-            # save the current chunk
-            chunk = tiktoken_model.decode(chunk_token)
+            
+
+            chunk = tiktoken_client.decode(chunk_token, skip_special_tokens=True)
             results.append(
                 {
                     "tokens": len(chunk_token),
-                    "content": chunk.strip(),
+                    "content": chunk["text"],
                     "chunk_order_index": chunk_order_index,
                     "video_segment_id": chunk_segment_ids,
                 }
@@ -69,11 +55,12 @@ def chunking_by_video_segments(
     
     # save the last chunk
     if len(chunk_token) > 0:
-        chunk = tiktoken_model.decode(chunk_token)
+
+        chunk = tiktoken_client.decode(chunk_token, skip_special_tokens=True)
         results.append(
             {
                 "tokens": len(chunk_token),
-                "content": chunk.strip(),
+                "content": chunk["text"],
                 "chunk_order_index": chunk_order_index,
                 "video_segment_id": chunk_segment_ids,
             }
@@ -91,10 +78,12 @@ def get_chunks(new_videos, chunk_func=chunking_by_video_segments, **chunk_func_p
         docs = [new_videos[video_name][index]["content"] for index in segment_id_list]
         doc_keys = [f'{video_name}_{index}' for index in segment_id_list]
 
-        tokens = tiktoken_model_p.batch_encode_plus(docs)
-        tokens_list = tokens['input_ids']
+
+        tokens_dict = tiktoken_client.batch_encode(docs, padding=True)
+        tokens_list = tokens_dict.get("token_ids_batch", tokens_dict) if isinstance(tokens_dict, dict) else tokens_dict
+
         chunks = chunk_func(
-            tokens_list, doc_keys=doc_keys, tiktoken_model=tiktoken_model_p, **chunk_func_params
+            tokens_list, doc_keys=doc_keys,  **chunk_func_params
         )
 
         for chunk in chunks:

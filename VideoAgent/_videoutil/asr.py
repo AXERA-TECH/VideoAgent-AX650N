@@ -4,12 +4,13 @@ import os
 import torch
 import logging
 from tqdm import tqdm
-from faster_whisper import WhisperModel
+
 # from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 import os
-from .._llm import ASRModel
+from .._llm import ASRModel, SherpaOnnxASRClient
 
 model = ASRModel()
+OnnxASRClient = SherpaOnnxASRClient()
 def speech_to_text(video_name, working_dir, segment_index2name, audio_output_format):
     # model_path = os.getenv("WhisperModel_Path")
     # model = WhisperModel(model_path)
@@ -27,15 +28,8 @@ def speech_to_text(video_name, working_dir, segment_index2name, audio_output_for
             transcripts[index] = ""
             continue
 
-        # segments, info = model.transcribe(audio_file)
-        # result = ""
-        # for segment in segments:
-        #     result += "[%.2fs -> %.2fs] %s\n" % (segment.start, segment.end, segment.text)
-        # transcripts[index] = result
-
-
-        result = model.transcribe(audio_file, language="en")
-
+        # result = model.transcribe(audio_file)
+        result = OnnxASRClient.transcribe(audio_file)
         # 处理不同的返回类型
         if isinstance(result, tuple):
             # 如果返回 tuple，提取文本

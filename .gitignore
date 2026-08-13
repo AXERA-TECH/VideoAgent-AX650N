@@ -1,0 +1,77 @@
+# --- 敏感配置 / Secrets ---
+.env
+.env.local
+.env.*.local
+*.env
+
+# --- 凭证 / 密钥 ---
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+.python-version
+
+# 测试 / 覆盖率
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- IDE / 编辑器 ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Gradio 运行时缓存 ---
+.gradio_temp/
+.gradio/
+ flagged/
+.gradio_positional/
+
+# --- 模型权重 / 大文件(按需保留,默认忽略) ---
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.axmodel
+
+# --- 日志 / 临时 ---
+*.log
+logs/
+tmp/
+*.tmp
+
+# --- 上传辅助脚本 ---
+uphg.py
