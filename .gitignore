@@ -75,3 +75,6 @@ tmp/
 
 # --- 上传辅助脚本 ---
 uphg.py
+
+# --- VideoAgent 运行时数据 ---
+working_dir*/

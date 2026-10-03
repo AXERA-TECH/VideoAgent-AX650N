@@ -80,224 +80,175 @@
 
 ### 🚀 功能特性
 
-- **视频智能索引** — 自动分段、语音识别、画面描述、多模态信息融合，一键完成长视频入库。
-- **跨模态语义检索** — 融合文本块检索与视频片段特征检索，从"说了什么"和"看到什么"双路召回。
-- **自然语言问答** — 用自然语言提问，基于检索到的多模态上下文生成带时间定位的回答。
-- **增量入库** — 自动跳过已索引视频，避免重复处理。
-- **可配置预处理** — 分段时长、抽帧数、分辨率、帧率、检索 Top-K、相似度阈值均可通过 `.env` 调整。
+- **视频智能索引**：自动分段，每段**看画面**（VLM 描述）、**听声音**（SenseVoice）、**读文字**（PP-OCR 识别招牌、字幕、菜单）；边看边生成**章节摘要**。
+- **上下文自适应**：自动读取各模型服务的 **prefill 上限**，据此决定每段抽几帧、一次能放多少资料、何时分段整合，不会再因为 prompt 超长而"没反应"。
+- **多路查找**：问题里的关键词先在画面文字、描述、语音里直接匹配（店名/人名/字幕最准）；匹配不到再由模型读章节摘要定位（或可选的向量检索）；「描述/概括这段视频」直接用章节摘要。
+- **全过程可视化**：索引时像"跟着 AI 一起看视频"——轮播正在分析的帧、逐字写出看到的内容、标出读到的文字、时间轴逐段点亮；提问时用大白话展示查找过程，引用编号可点击直接播放对应片段。
+- **带时间定位的回答**：回答用 [编号] 引用资料，自动导出对应视频片段播放。
+- **增量入库**：按文件指纹去重，已索引视频自动跳过。
 
 ### 🔧 技术特性
 
-- **端侧全栈部署** — ASR / VLM / LLM / Embedding 全部模型基于 AX650N 芯片部署，端到端本地运行。
-- **模块化解耦** — 模型客户端、视频处理、向量存储、查询编排各层独立，可替换、可扩展。
-- **OpenAI 兼容 API** — Embedding、VLM、LLM 均通过标准 `/v1` 接口调用，统一接入。
-- **流式输出** — 问答支持流式返回，交互体验更流畅。
+- **端侧全栈部署**：ASR / VLM / LLM / Embedding 全部跑在 AX650N（板端或 AXCL 加速卡）。
+- **轻依赖**：客户端只需 `requests / numpy / Pillow`，网页服务用 Python 标准库实现（不需要 gradio），板端出厂系统即可运行。
+- **单卡优先**：默认只需 VLM + ASR（≈2.4 GB CMM），Embedding / 独立 LLM 可选；多卡部署时各阶段自动流水线并行。
+- **健壮性**：服务忙（429）自动排队重试；上下文溢出自动缩减重试；小模型偶发空回答自动换 prompt 重试；错误直接显示在界面上。
 
 ---
 
 ## 系统架构
 
-### 技术路线
-
-#### 视频索引流程
-
-视频经预处理、分段后**分两路并行**，均由 **Qwen3-VL-Embedding** 编码后存入 NanoVectorDB：**文本路**（ASR + VLM 融合 → 文本分块 → `chunks` 库）与**视觉路**（抽帧 → 视觉特征 → `video_segment_feature` 库）。
+### 视频索引流程
 
 ```mermaid
 flowchart TD
-    A[视频输入] --> B[预处理<br/>384×384 · 5fps]
-    B --> C[分段 10s/段<br/>并抽取音频]
-
-    C -->|文本路| T1[ASR 语音转文字 · SenseVoice<br/>+ VLM 片段描述 · Qwen3-VL]
-    T1 --> T2[多模态信息融合<br/>ASR + Caption]
-    T2 --> T3[文本分块]
-    T3 --> T4[Qwen3-VL-Embedding 编码]
-    T4 --> DB1[(文本向量库<br/>chunks)]
-
-    C -->|视觉路| V1[片段抽帧 ≤5 帧]
-    V1 --> V2[Qwen3-VL-Embedding 编码]
-    V2 --> DB2[(片段特征向量库<br/>video_segment_feature)]
+    A[视频] --> B[读取各模型 prefill 上限<br/>/v1/models]
+    B --> C[按 10s 分段 · 一次解码抽帧/抽音频<br/>每段帧数 = VLM 预算 / 每帧 token]
+    C --> D[ASR · SenseVoice]
+    D --> E[VLM 画面描述 · Qwen3-VL-2B]
+    E --> F[Embedding · 文本向量 + 画面向量]
+    E --> G[LLM 章节摘要 · 每 ≤6 段一章<br/>超出上下文再逐层合并]
+    F --> H[(index.json + vectors/*.npz)]
+    G --> H
 ```
 
-#### 查询流程
-
-自然语言提问后**双路检索**（文本块 + 跨模态片段），由 LLM 抽取关键词、VLM 为检索片段生成相关描述，最终组装上下文交由 LLM 生成回答。
+### 查询流程
 
 ```mermaid
 flowchart TD
-    Q[自然语言提问]
-    Q -->|文本块检索| R1[文本向量库 chunks<br/>Top-K]
-    Q -->|跨模态片段检索| R2[片段特征向量库<br/>文本查询编码匹配视觉特征 · Top-K]
-    Q --> M[LLM 抽取查询关键词]
-
-    R2 --> N[对检索片段抽帧<br/>VLM 生成关键词相关描述]
-    M --> N
-
-    R1 --> O[组装上下文<br/>检索文本块 + 片段描述]
-    N --> O
-    O --> P[LLM 生成回答 · Qwen3-1.7B]
+    Q[问题] --> P{全部片段 token<br/>≤ LLM 可用预算?}
+    P -->|是| FULL[全量：所有片段按时间顺序]
+    P -->|否| R[文本+画面向量混合检索]
+    R --> G{全局问题 / 无命中?}
+    G -->|是| S[章节摘要：选能放下的最低层<br/>必要时实时 map-reduce]
+    G -->|否| T[Top-K 命中 + VLM 带着问题重看最佳片段<br/>按预算装箱]
+    FULL --> A[LLM 流式回答 · 引用 编号]
+    S --> A
+    T --> A
+    A -->|服务端报上下文超长| P2[缩小预算重试]
 ```
 
+预算的计算方式：`可用预算 = min(prefill 上限, 上下文长度 − 回答预留) × 安全系数 − 系统提示 − 问题`。
+没有 `tokenizer.json` 时用估算 + 服务端返回的 `usage.prompt_tokens` 自动校准。
 
 ### 项目目录
 
 ```
 VideoAgent-AX650N/
-├── VideoAgent/                      # 核心包
-│   ├── _llm/                        # 模型客户端层（OpenAI 兼容封装）
-│   │   ├── embedding_model.py       # 多模态嵌入客户端
-│   │   ├── vlm_model.py             # 视觉语言模型客户端
-│   │   ├── llm_model.py             # 大语言模型客户端
-│   │   ├── asr_model.py             # 语音识别客户端
-│   │   └── tokenizer_model.py       # 分词器客户端
-│   ├── _server/                     # 模型服务层（FastAPI）
-│   │   ├── embedding_server.py      # Embedding 服务
-│   │   ├── vlm_server.py            # VLM 服务
-│   │   ├── llm_server.py            # LLM 服务
-│   │   ├── sherpa_asr_server.py     # ASR 服务（SenseVoice）
-│   │   └── tokenizer_server.py      # Tokenizer 服务
-│   ├── _storage/                    # 存储层
-│   │   ├── kv_json.py               # JSON KV 存储
-│   │   └── vdb_nanovectordb.py      # NanoVectorDB 向量存储
-│   ├── _videoutil/                  # 视频处理工具
-│   │   ├── split.py                 # 视频预处理 / 分段 / 抽帧
-│   │   ├── asr.py                   # 语音转文字
-│   │   ├── caption.py               # 片段描述生成
-│   │   └── feature.py               # 特征编码
-│   ├── vidrag_pipeline.py           # 核心管道（VideoRAG）
-│   ├── query.py                     # 查询编排
-│   ├── chunk.py                     # 分块逻辑
-│   ├── prompt.py                    # 提示词模板
-│   └── base.py                      # 基础数据结构（QueryParam 等）
-├── working_dir/                     # 运行时数据目录（索引缓存）
-├── webui.py                         # Gradio Web 入口
-├── videorag_longervideos.py         # 测试 / 示例脚本
-├── requirements.txt                 # Python 依赖
-├── .env.example                     # 环境变量模板
-└── README.md                        # 项目文档
+├── VideoAgent/
+│   ├── agent.py        # VideoAgent 门面：index() / ask() / query() / status()
+│   ├── config.py       # 所有配置（读取 .env）
+│   ├── clients.py      # axllm LLM/VLM/Embedding 客户端 + 上限探测、ASR 客户端
+│   ├── tokens.py       # token 计数（精确或估算+自动校准）
+│   ├── media.py        # ffmpeg：探测、一次解码抽帧/抽音频、导出片段
+│   ├── indexer.py      # 索引流水线 + 章节摘要
+│   ├── query.py        # 自适应问答（全量 / 检索 / 章节整合）
+│   ├── store.py        # 索引存储（JSON + npz）
+│   ├── prompts.py      # 提示词
+│   └── __main__.py     # 命令行
+├── servers/
+│   ├── perception_server.py      # 感知服务：SenseVoice 语音 + PP-OCR 文字（pyaxengine，板端/AXCL 通用）
+│   └── sherpa_asr_server.py      # SenseVoice（sherpa-onnx，板端 aarch64）
+├── webui.py            # 网页服务（标准库 HTTP + SSE）
+├── web/                # 前端（原生 HTML/CSS/JS）
+└── .env.example
 ```
+
 ---
 
 ## 快速开始
 
-### 1. 模型下载
+### 1. 模型
 
-运行前，请下载以下适配 AX650N 芯片的模型并参照相关文档完成部署：
+| 模型类型 | 模型 | 说明 |
+|---------|------|------|
+| **ASR** | [SenseVoice](https://huggingface.co/AXERA-TECH/SenseVoice) | 多语言语音识别 |
+| **OCR** | [PPOCR_v6](https://huggingface.co/AXERA-TECH/PPOCR_v6) | 画面文字识别（店招、字幕），约 23 MB |
+| **VLM** | [Qwen3-VL-2B-Instruct-GPTQ-Int4](https://huggingface.co/AXERA-TECH/Qwen3-VL-2B-Instruct-GPTQ-Int4) | 片段画面描述 |
+| **LLM**（可选） | [Qwen3-1.7B](https://huggingface.co/AXERA-TECH/Qwen3-1.7B) | 不配置时由 VLM 兼任 |
+| **Embedding**（可选） | [Qwen3-VL-Embedding-2B-AX650](https://huggingface.co/AXERA-TECH/Qwen3-VL-Embedding-2B-AX650-C128_P1280_CTX1407) | 文本/画面统一向量，2048 维 |
 
-| 模型类型 | 模型名称（链接） | 说明 |
-|---------|---------|------|
-| **ASR** | [SenseVoiceSmall-axmodel](https://huggingface.co/M5Stack/SenseVoiceSmall-axmodel) | 多语言语音理解模型 |
-| **VLM** | [Qwen3-VL-2B-Instruct-GPTQ-Int4](https://huggingface.co/AXERA-TECH/Qwen3-VL-2B-Instruct-GPTQ-Int4) | 多模态视觉语言模型 |
-| **LLM** | [Qwen3-1.7B](https://huggingface.co/AXERA-TECH/Qwen3-1.7B) | 大语言模型 |
-| **Embedding** | [Qwen3-VL-Embedding-2B-AX650](https://huggingface.co/AXERA-TECH/Qwen3-VL-Embedding-2B-AX650-C128_P1280_CTX1407) | 多模态嵌入模型 |
-| **Tokenizer** | [Qwen3-1.7B](https://modelscope.cn/models/Qwen/Qwen3-1.7B) | 分词器 |
+### 2. 启动模型服务
 
-### 2. 环境准备
+需要较新的 [axllm](https://github.com/AXERA-TECH/ax-llm)（`/v1/models` 会返回 `prefill_max_token_num` / `max_token_len`；旧版本也能用，首次启动时会自动测一次上限并缓存）。
+
+**单卡（默认，一颗 AX650 / 一张 AXCL 卡）**：只需要 VLM + ASR，VLM 同时承担 LLM 的工作。
+
+| 组合 | CMM | 说明 |
+|------|-----|------|
+| VLM + ASR + OCR（默认） | ≈ 2.5 GB | 关键词直接匹配 + 模型读章节摘要定位 |
+| + Embedding | ≈ 5.1 GB | 增加文本/画面向量检索（画面向量能找到描述里漏掉的视觉细节） |
+| + 独立 LLM（Qwen3-1.7B） | +2.2 GB | 回答窗口更大（prefill 2176 vs 1280）；四个模型合计 7.3 GB，单卡放不下 |
 
 ```bash
-# 安装系统依赖（视频/音频处理）
+# 板端 AX650；AXCL 加速卡用 AXLLM_DEVICES=<卡号> 指定卡
+axllm serve /path/to/Qwen3-VL-2B-Instruct-GPTQ-Int4 --port 8011
+# 可选
+# axllm serve /path/to/Qwen3-VL-Embedding-2B-AX650-C128_P1280_CTX1407 --port 8010
+# axllm serve /path/to/Qwen3-1.7B --port 8012
+
+# 感知服务：语音 + 文字识别（pyaxengine，板端和 AXCL 通用；AXCL 用 AXCL_DEVICE_ID 选卡）
+pip install -r servers/requirements.txt
+python3 servers/perception_server.py --port 8013 \
+    --asr-dir /path/to/SenseVoice --ocr-dir /path/to/PPOCR_v6
+```
+
+> 先启动 VLM，等它加载完再启动感知服务：两者同时加载时，axllm 的 mem-guard 会把感知服务占用的 CMM 算进 VLM 的每层开销，误判空间不足而中止加载。
+
+板端实测（AX650N 开发板，CMM 4.6 GB，只跑 VLM + ASR，占 2.9 GB）：3 分钟视频索引 4 分 19 秒；「描述这段画面」8 秒，具体问题 14～15 秒。
+
+单卡实测（AXCL，3 分钟视频，VLM + Embedding + ASR 同卡）：索引 7 分 42 秒；「描述这段画面」约 10 秒，具体问题约 10 秒（无 Embedding）/ 25～30 秒（有 Embedding，含 VLM 重看最佳片段）。
+
+### 3. 安装与配置
+
+```bash
 sudo apt install ffmpeg
-
-# 安装 Python 依赖
 pip install -r requirements.txt
+cp .env.example .env      # 按需修改服务地址
+python -m VideoAgent status   # 检查各服务与自动读取到的上下文上限
 ```
 
-### 3. 配置环境变量
-
-Embedding、VLM、LLM、ASR、Tokenizer 均通过环境变量配置。其中 Embedding、VLM、LLM 兼容 OpenAI API 格式。
+### 4. 启动
 
 ```bash
-cp .env.example .env
-# 编辑 .env，填入实际模型路径、API 地址与预处理参数
+python webui.py           # http://localhost:7869
 ```
-
-`.env` 关键配置项：
-
-```ini
-# Embedding API（OpenAI 格式）— 端口 8010
-EMBEDDING_API_BASE_URL = "http://0.0.0.0:8010/v1/"
-EMBEDDING_MODEL_NAME   = "AXERA-TECH/Qwen3-VL-Embedding-2B"
-
-# VLM API（OpenAI 格式）— 端口 8011
-VLM_API_BASE_URL = "http://0.0.0.0:8011/v1/"
-VLM_MODEL_NAME   = "AXERA-TECH/Qwen3-VL-2B-Instruct"
-
-# LLM API（OpenAI 格式）— 端口 8012
-LLM_API_BASE_URL = "http://0.0.0.0:8012/v1/"
-LLM_MODEL_NAME   = "AXERA-TECH/Qwen3-1.7B"
-
-# ASR API — 端口 8013
-SHERPA_ASR_URL    = "http://0.0.0.0:8013"
-SHERPA_MODEL_FILE = "/root/huangjie/AXERA-TECH/SenseVoice/ax650/model-10-seconds.axmodel"
-
-# Tokenizer API — 端口 8014
-Tokenizer_MODEL_PATH   = "./VideoAgent/_llm/tokenizer_model/Qwen/Qwen3-1.7B"
-Tokenizer_API_BASE_URL = "http://0.0.0.0:8014/"
-
-# 预处理与检索参数
-VIDEORAG_VIDEO_SEGMENT_LENGTH          = "10"   # 视频分段时长（秒）
-VIDEORAG_ROUGH_NUM_FRAMES_PER_SEGMENT  = "5"    # 每段抽帧数
-VIDEORAG_RETRIEVAL_TOPK_CHUNKS         = "2"    # 文本块检索 Top-K
-VIDEORAG_SEGMENT_RETRIEVAL_TOP_K       = "2"    # 视频片段检索 Top-K
-VIDEORAG_QUERY_BETTER_THAN_THRESHOLD   = "0.2"  # 相似度阈值
-VIDEORAG_CHUNK_TOKEN_SIZE              = "800"  # 文本分块大小
-```
-
-### 4. 启动模型服务
-
-基于 AX650N 芯片启动各模型服务：
-
-```bash
-# Embedding 服务 — 端口 8010
-axllm serve /root/huangjie/AXERA-TECH/models--AXERA-TECH--Qwen3-VL-Embedding-2B-AX650-C128_P1280_CTX1407 --port 8010
-
-# VLM 服务 — 端口 8011
-axllm serve /root/huangjie/AXERA-TECH/Qwen3-VL-2B-Instruct-GPTQ-Int4 --port 8011
-
-# LLM 服务 — 端口 8012
-axllm serve /root/huangjie/AXERA-TECH/models--AXERA-TECH--Qwen3-1.7B --port 8012
-
-# ASR 服务 — 端口 8013
-python VideoAgent/_server/sherpa_asr_server.py
-
-# Tokenizer 服务 — 端口 8014
-python VideoAgent/_server/tokenizer_server.py
-```
-
-### 5. 启动项目
-
-```bash
-python webui.py
-```
-
-浏览器访问 **http://localhost:7869**
 
 ---
 
 ## 使用方式
 
-### Web UI（推荐）
+### Web UI
 
-启动后在浏览器中完成视频索引与检索问答，支持在线预览：
+```bash
+python3 webui.py --port 7869     # 浏览器打开 http://<设备IP>:7869
+```
 
-| 索引界面 | 检索界面 |
-|---------|---------|
-| ![索引界面](assets/image-5.png) | ![检索界面](assets/image-4.png) |
+- **视频库**：拖入视频上传后，页面实时展示 AI 逐段观看的过程：正在分析的帧、它写下的画面描述、读到的文字、听到的话，时间轴逐段点亮、章节摘要依次出现。点开已上传的视频可以查看时间轴、章节和每一段的内容，点击任意位置跳转播放。
+- **问视频**：输入问题（可限定在某几个视频里找）。右侧「AI 是怎么找到答案的」一步步说明：提取了哪些关键词、在哪些片段里找到（关键词高亮）、交给 AI 多少资料；左侧是回答和相关片段，回答里的 [编号] 可以点击直接播放。
+
+### 命令行
+
+```bash
+python -m VideoAgent index assets/sanguo.mp4
+python -m VideoAgent ask "用简体中文描述这段画面"
+python -m VideoAgent ask "有人在宣读告示吗？在什么时候？" --video sanguo
+```
 
 ### Python SDK
 
 ```python
-from VideoAgent import VideoRAG, QueryParam
+from VideoAgent import VideoAgent
 
-# 初始化 RAG 系统
-rag = VideoRAG(working_dir="./working_dir")
+agent = VideoAgent("./working_dir")
+agent.index(["video1.mp4", "video2.mp4"])            # 已索引的自动跳过
 
-# 索引视频文件（支持批量，自动跳过已索引视频）
-rag.insert_video(video_path_list=["video1.mp4", "video2.mp4"])
+res = agent.query("视频中什么时候出现张飞？")          # {"answer", "refs", "mode"}
+print(res["answer"])
 
-# 查询视频内容
-result = rag.query(query="视频中什么时候出现张飞？", param=QueryParam())
-print(result)
+for ev in agent.ask("用简体中文描述这段画面"):        # 流式：status / plan / hits / condensed / context / delta / done
+    if ev["type"] == "delta":
+        print(ev["text"], end="", flush=True)
 ```
 
 ---
@@ -320,8 +271,6 @@ LLM 服务
 ![LLM 服务](assets/image-16.png)
 ASR 服务
 ![ASR 服务](assets/image-12.png)
-Tokenizer 服务
-![Tokenizer 服务](assets/image-13.png)
 运行启动服务
 ![运行启动服务](assets/image-17.png)
 
@@ -355,25 +304,29 @@ Tokenizer 服务
 
 ## 常见问题
 
-### Q: 视频索引很慢，如何加速？
+### Q: 提问后「没反应」？
 
-索引耗时主要来自 VLM 描述与特征编码。可在 `.env` 中适当增大 `VIDEORAG_VIDEO_SEGMENT_LENGTH`（减少片段数）、减小每段抽帧数 `VIDEORAG_ROUGH_NUM_FRAMES_PER_SEGMENT`，或降低预处理分辨率 / 帧率，以在精度与速度间取得平衡。
+旧版本的两个原因：① 回答前要做关键词抽取 + 两次 VLM 重新描述，界面在 1～3 分钟内只显示"正在检索"；② 拼好的 prompt 很容易超过 Qwen3-1.7B 的 prefill 上限（2176 token），axllm 直接返回错误。
+现在的版本会自动读取上限并按预算组织上下文，超长时自动缩减重试，每一步进度都显示在「推理过程」面板里；概括类问题直接使用索引时生成的章节摘要。
+
+### Q: 索引很慢，如何加速？
+
+耗时主要在 VLM 画面描述（每段一次，单卡约 14 秒）。可以增大 `VIDEOAGENT_SEGMENT_SECONDS`、减小 `VIDEOAGENT_MAX_FRAMES_PER_SEGMENT` 或 `VIDEOAGENT_CAPTION_MAX_TOKENS`；不配 Embedding 也能省掉每段的向量编码。
+
+### Q: 回答慢？
+
+具体问题会让 VLM 带着问题重新观察最佳片段（约 20～30 秒），`VIDEOAGENT_REFINE_TOP_N=0` 可关闭。
 
 ### Q: 检索不到相关片段？
 
-请先确认 Embedding 服务已正常启动、视频已成功索引。若召回为空，可适当调低相似度阈值 `VIDEORAG_QUERY_BETTER_THAN_THRESHOLD`，或增大 `VIDEORAG_SEGMENT_RETRIEVAL_TOP_K` 与 `VIDEORAG_RETRIEVAL_TOPK_CHUNKS`。
+全局问题或没有命中时会自动改用章节摘要回答；也可调低 `VIDEOAGENT_SCORE_THRESHOLD` 或增大 `VIDEOAGENT_TOP_K`。
 
 ### Q: 如何确认各模型服务已就绪？
 
-各服务默认端口为 Embedding 8010、VLM 8011、LLM 8012、ASR 8013、Tokenizer 8014。可分别访问对应端口或查看服务日志确认启动成功后，再运行索引与查询。
+`python -m VideoAgent status`，或 Web UI 的「系统状态」页。
 
 ### Q: 重复索引同一视频会怎样？
 
-系统以视频文件名作为标识，`insert_video` 会自动跳过已索引的视频，避免重复处理。如需重新索引，请清理 `working_dir` 中对应数据。
-
-### Q: 语音识别（ASR）报错或无字幕？
-
-请确认已安装 `ffmpeg`，`SHERPA_MODEL_FILE` 指向正确的 axmodel 文件，且 ASR 服务已启动。无语音的视频片段仍可仅凭画面描述参与检索。
+按文件内容指纹去重，已索引的直接跳过；在「已索引视频」页删除后可重新索引。
 
 ---
-

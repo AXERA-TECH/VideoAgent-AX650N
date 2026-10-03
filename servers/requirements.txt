@@ -1,0 +1,11 @@
+# servers/perception_server.py — the HTTP server is stdlib
+numpy
+# pyaxengine: https://github.com/AXERA-TECH/pyaxengine/releases (preinstalled on AX650 board images)
+# ASR (SenseVoice)
+kaldi-native-fbank
+# OCR (PP-OCRv6)
+opencv-python-headless
+shapely
+pyclipper
+pyyaml
+# ffmpeg on PATH for non-wav audio

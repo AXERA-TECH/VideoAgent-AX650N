@@ -1,1 +1,4 @@
-from .vidrag_pipeline import VideoRAG, QueryParam
+from .agent import VideoAgent
+from .config import Settings
+
+__all__ = ["VideoAgent", "Settings"]

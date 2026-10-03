@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VideoAgent · 视频理解与问答</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="logo">▶</div>
+    <div>
+      <div class="title">VideoAgent</div>
+      <div class="subtitle">视频理解与问答 · 全部在 AX650N 本地运行</div>
+    </div>
+  </div>
+  <div class="pills" id="pills"></div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="ask">💬 问视频</button>
+  <button class="tab" data-tab="library">🎞️ 视频库</button>
+</nav>
+
+<main>
+  <!-- ============================== 问答 ============================== -->
+  <section id="tab-ask" class="panel active">
+    <form class="askbar" id="askform">
+      <input id="q" autocomplete="off" placeholder="问问视频里的内容，例如：哪一段有肠粉店？">
+      <button type="submit" id="askbtn">提问</button>
+    </form>
+    <div class="row wrap gap8" id="scope"></div>
+    <div class="row wrap gap8 examples" id="examples"></div>
+
+    <div class="askgrid">
+      <div class="col">
+        <div class="card" id="answercard">
+          <div class="card-h">回答</div>
+          <div id="answer" class="answer muted">在上面输入问题，AI 会在已上传的视频里查找并回答，同时告诉你出现在什么时间。</div>
+        </div>
+        <div class="card hidden" id="playercard">
+          <div class="card-h">相关片段 <span class="muted small">点击播放</span></div>
+          <video id="player" controls playsinline preload="metadata"></video>
+          <div id="refs" class="refs"></div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card">
+          <div class="card-h">AI 是怎么找到答案的</div>
+          <ol id="steps" class="steps"><li class="muted small">提问后，这里会一步步展示查找过程。</li></ol>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== 视频库 ============================== -->
+  <section id="tab-library" class="panel">
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept="video/*" multiple hidden>
+      <div class="drop-icon">⬆</div>
+      <div><b>点击或拖入视频</b>，上传后 AI 会逐段观看：看画面、听声音、读画面里的文字</div>
+      <div class="upbar hidden" id="upbar"><span></span></div>
+      <div class="muted small" id="upmsg"></div>
+    </label>
+
+    <div class="card hidden" id="watch">
+      <div class="watch-h">
+        <div><span class="live">● LIVE</span> <b id="w-title">AI 正在看视频</b> <span class="muted" id="w-sub"></span></div>
+        <div class="muted small" id="w-msg"></div>
+      </div>
+      <div class="prog"><span id="w-prog"></span></div>
+      <div class="watch-body">
+        <div class="screen" id="w-screen">
+          <div class="scan"></div><div class="corners"></div>
+          <div class="hud" id="w-hud">准备中…</div>
+          <div class="rec">ANALYZING</div>
+        </div>
+        <div class="notes" id="w-notes">
+          <div class="muted">等 AI 看完第一段，这里会写下它看到、听到和读到的内容。</div>
+        </div>
+      </div>
+      <div class="timeline" id="w-tl"></div>
+      <div class="feed" id="w-feed"></div>
+    </div>
+
+    <div class="card-h big">已上传的视频</div>
+    <div class="videos" id="videos"></div>
+
+    <div class="card hidden" id="detail">
+      <div class="card-h" id="d-title"></div>
+      <div class="detailgrid">
+        <video id="d-player" controls playsinline preload="metadata"></video>
+        <div>
+          <div class="muted small">章节</div>
+          <div id="d-chapters" class="chapters"></div>
+        </div>
+      </div>
+      <div class="timeline" id="d-tl"></div>
+      <div class="muted small" style="margin:8px 0">每一段 AI 记下的内容（点击跳转播放）</div>
+      <div class="feed" id="d-segs"></div>
+    </div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
